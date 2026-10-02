@@ -81,14 +81,76 @@ public class TrafficStatsManager {
     }
 
     /** Return the cached hostname for an IP, or the raw IP string if unknown. */
-    public String resolveHostname(String ip) {
+    public String getCachedHostname(String ip) {
         String h = dnsCache.get(ip);
         return (h != null && !h.isEmpty()) ? h : ip;
+    }
+
+    /**
+     * Set to avoid repeated resolution and broadcast for same IP:Port in current session
+     */
+    private final java.util.Set<String> knownConnections = Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.concurrent.ExecutorService dnsPool = java.util.concurrent.Executors.newFixedThreadPool(4);
+
+    /**
+     * Async DNS resolver.
+     */
+    public void resolveHostnameAsync(String ip, String nodeName, String proto, int port, android.content.Context context) {
+        String connKey = proto + ":" + ip + ":" + port;
+        if (knownConnections.contains(connKey)) {
+            return; // Already resolved or queued
+        }
+        knownConnections.add(connKey);
+
+        String cached = getCachedHostname(ip);
+        if (!cached.equals(ip)) {
+            emitConnection(proto + "://" + cached + ":" + port, nodeName, context);
+            return;
+        }
+
+        dnsPool.submit(() -> {
+            try {
+                String[] parts = ip.split("\\.");
+                byte[] addr = new byte[4];
+                for (int i = 0; i < 4; i++) addr[i] = (byte) Integer.parseInt(parts[i]);
+                java.net.InetAddress inetAddr = java.net.InetAddress.getByAddress(addr);
+
+                String hostName = inetAddr.getHostName();
+                if (hostName != null && !hostName.isEmpty() && !hostName.equals(ip)) {
+                    if (hostName.endsWith(".")) hostName = hostName.substring(0, hostName.length() - 1);
+                    cacheDns(ip, hostName);
+                }
+            } catch (Exception ignored) {}
+            String finalHostname = getCachedHostname(ip);
+            emitConnection(proto + "://" + finalHostname + ":" + port, nodeName, context);
+        });
+    }
+
+    private final android.os.Handler uiDebounceHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable uiDebounceRunnable;
+
+    private void emitConnection(String targetUrl, String nodeName, android.content.Context context) {
+        com.proxy.wireopen.model.ConnectionRecord record = new com.proxy.wireopen.model.ConnectionRecord(
+                targetUrl, "刚刚", 0, 0, "🌐", nodeName, "GLOBAL");
+        addConnection(record);
+
+        if (context != null) {
+            if (uiDebounceRunnable != null) {
+                uiDebounceHandler.removeCallbacks(uiDebounceRunnable);
+            }
+            uiDebounceRunnable = () -> {
+                android.content.Intent broadcast = new android.content.Intent("com.proxy.wireopen.CONNECTION_CAPTURED");
+                broadcast.setPackage(context.getPackageName());
+                context.sendBroadcast(broadcast);
+            };
+            uiDebounceHandler.postDelayed(uiDebounceRunnable, 200);
+        }
     }
 
     // ─── Session lifecycle ───────────────────────────────────────────────────
 
     public synchronized void startSession(String endpoint, String protocol, String tunIp) {
+        knownConnections.clear();
         this.sessionActive = true;
         this.sessionStartTime = System.currentTimeMillis();
         this.sessionRxBytes = 0;

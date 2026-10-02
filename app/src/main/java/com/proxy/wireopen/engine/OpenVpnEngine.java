@@ -35,9 +35,13 @@ public class OpenVpnEngine implements IVpnEngine {
     private Thread txThread;
     private Thread rxThread;
     private long lastTrafficReportTime = 0;
+    private VpnService vpnServiceRef;
+    private String nodeName;
 
     @Override
     public synchronized void start(VpnService vpnService, ProxyProfile profile, EngineCallback callback) throws Exception {
+        this.vpnServiceRef = vpnService;
+        this.nodeName = profile.getName() != null ? profile.getName() : "OpenVPN Node";
         if (isRunning.get()) {
             return;
         }
@@ -138,6 +142,9 @@ public class OpenVpnEngine implements IVpnEngine {
                     txBytes.addAndGet(length);
                     packet.limit(length);
 
+                    // Parse packet to sniff target URL and record it
+                    sniffPacket(packet.array(), length);
+
                     if (isTcp && tcpChannel != null) {
                         tcpChannel.write(packet);
                     } else if (udpChannel != null) {
@@ -187,6 +194,43 @@ public class OpenVpnEngine implements IVpnEngine {
             if (disconnectedFired.compareAndSet(false, true)) {
                 callback.onDisconnected();
             }
+        }
+    }
+
+    private void sniffPacket(byte[] buffer, int length) {
+        if (length < 20) return;
+
+        // Check if it's an IPv4 packet (version == 4)
+        int version = (buffer[0] >> 4) & 0x0F;
+        if (version != 4) return;
+
+        int ihl = (buffer[0] & 0x0F) * 4;
+        if (length < ihl) return;
+
+        int protocol = buffer[9] & 0xFF;
+
+        // Extract Destination IP
+        String destIp = (buffer[16] & 0xFF) + "." + (buffer[17] & 0xFF) + "." + (buffer[18] & 0xFF) + "." + (buffer[19] & 0xFF);
+
+        // Filter out broadcast and local network traffic
+        if (destIp.startsWith("10.") || destIp.startsWith("192.168.") || destIp.equals("255.255.255.255")) return;
+
+        int destPort = 0;
+        String protoStr = "";
+
+        if (protocol == 6 && length >= ihl + 4) { // TCP
+            protoStr = "tcp";
+            destPort = ((buffer[ihl + 2] & 0xFF) << 8) | (buffer[ihl + 3] & 0xFF);
+        } else if (protocol == 17 && length >= ihl + 4) { // UDP
+            protoStr = "udp";
+            destPort = ((buffer[ihl + 2] & 0xFF) << 8) | (buffer[ihl + 3] & 0xFF);
+            if (destPort == 53) return; // Ignore DNS requests for cleaner list
+        } else {
+            return;
+        }
+
+        if (destPort > 0) {
+            com.proxy.wireopen.util.TrafficStatsManager.getInstance().resolveHostnameAsync(destIp, nodeName, protoStr, destPort, vpnServiceRef);
         }
     }
 
