@@ -1739,11 +1739,7 @@ public class MainActivity extends AppCompatActivity {
         filter.addAction(UnifiedVpnService.ACTION_TRAFFIC_UPDATE);
         filter.addAction(UnifiedVpnService.ACTION_CONNECTION_CAPTURED);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(vpnStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(vpnStateReceiver, filter);
-        }
+        ContextCompat.registerReceiver(this, vpnStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
         updateConnectionUi(UnifiedVpnService.getCurrentState());
         updateActiveProfileUi();
     }
