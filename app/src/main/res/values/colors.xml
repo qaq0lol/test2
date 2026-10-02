@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base Brand Colors -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF4355B9</color>
+    <color name="purple_700">#FF303F9F</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Legacy / Compatibility Colors -->
+    <color name="bg_dark">#F6F8FC</color>
+
+    <!-- Material 3 Semantic Colors (Light Mode) -->
+    <color name="bg_page">#F6F8FC</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="surface_inner">#F1F5F9</color>
+    <color name="card_stroke">#E2E8F0</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="text_muted">#94A3B8</color>
+
+    <color name="brand_primary">#4355B9</color>
+    <color name="brand_primary_container">#E0E3FF</color>
+    <color name="nav_bar_bg">#FFFFFF</color>
+    <color name="nav_active_pill">#E0E3FF</color>
+
+    <color name="console_bg">#1E293B</color>
+    <color name="console_text">#F8FAFC</color>
+
+    <!-- Status Colors -->
+    <color name="status_green">#16A34A</color>
+    <color name="status_orange">#EA580C</color>
+    <color name="status_red">#DC2626</color>
+
+    <!-- Orb Colors -->
+    <color name="orb_connected_start">#10B981</color>
+    <color name="orb_connected_center">#14B8A6</color>
+    <color name="orb_connected_end">#06B6D4</color>
+    <color name="orb_ring_connected">#3310B981</color>
+
+    <color name="orb_disconnected_start">#64748B</color>
+    <color name="orb_disconnected_end">#475569</color>
+    <color name="orb_ring_disconnected">#2264748B</color>
+
+    <color name="orb_connecting_start">#F59E0B</color>
+    <color name="orb_connecting_end">#EA580C</color>
+    <color name="orb_ring_connecting">#33F59E0B</color>
+
+    <!-- Protocol Badges -->
+    <color name="accent_wireguard">#7E22CE</color>
+    <color name="accent_openvpn">#EA580C</color>
+</resources>

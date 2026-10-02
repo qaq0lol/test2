@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">WireOpen 代理</string>
+    <string name="subtitle">WireGuard &amp; OpenVPN 双协议代理客户端 (Android 16+)</string>
+    <string name="action_connect">开启连接</string>
+    <string name="action_disconnect">断开连接</string>
+    <string name="action_import_file">导入文件 (.conf / .ovpn)</string>
+    <string name="action_paste_config">手动粘贴配置</string>
+    <string name="status_disconnected">未连接</string>
+    <string name="status_connecting">正在连接...</string>
+    <string name="status_connected">已连接</string>
+    <string name="no_profile_selected">尚未选择或导入代理节点</string>
+    <string name="profiles_title">配置节点列表</string>
+    <string name="logs_title">实时日志输出</string>
+</resources>
