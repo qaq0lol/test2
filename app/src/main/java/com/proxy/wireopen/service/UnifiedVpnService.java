@@ -170,7 +170,12 @@ public class UnifiedVpnService extends VpnService {
 
     @Override
     public void onRevoke() {
-        LogManager.log("UnifiedVpnService", "系统已撤回 VPN 权限");
+        LogManager.log("UnifiedVpnService", "系统 VPN 权限接口回调");
+        // 当为 OpenVPN 协议时，TUN 接口由 OpenVPN 官方原生服务接管，收到 onRevoke 属于正常交接，不能调用 stopTunnel 误杀连接
+        if (activeEngine instanceof OpenVpnEngine) {
+            LogManager.log("UnifiedVpnService", "底层 TUN 接口已由 OpenVPN 原生服务顺利接管");
+            return;
+        }
         stopTunnel();
         super.onRevoke();
     }
