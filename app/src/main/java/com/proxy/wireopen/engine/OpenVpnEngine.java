@@ -85,17 +85,22 @@ public class OpenVpnEngine implements IVpnEngine, VpnStatus.StateListener, VpnSt
 
         boolean hasCerts = (vpnProfile.mClientCertFilename != null && !vpnProfile.mClientCertFilename.isEmpty()) ||
                            (vpnProfile.mPKCS12Filename != null && !vpnProfile.mPKCS12Filename.isEmpty());
-        
+
+        boolean configRequiresUserPass = rawConfig.contains("auth-user-pass");
         if (hasUserPass) {
             if (hasCerts) {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS_CERTIFICATES;
             } else {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
             }
+        } else if (configRequiresUserPass) {
+            // Configuration explicitly requires auth-user-pass, but no credentials provided
+            throw new IllegalArgumentException("该 OpenVPN 节点需要账号密码认证，请点击节点库右上角「OpenVPN 账号密码」配置后重试");
         } else if (vpnProfile.mAuthenticationType == VpnProfile.TYPE_KEYSTORE) {
             if (hasCerts) {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_CERTIFICATES;
             } else {
+                // No client certs and no auth-user-pass directive, fallback to certificate-less / anonymous auth
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
             }
         }

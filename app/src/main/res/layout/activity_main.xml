@@ -48,7 +48,7 @@
                     android:paddingEnd="6dp"
                     android:paddingTop="1dp"
                     android:paddingBottom="1dp"
-                    android:text="v1.0.9"
+                    android:text="v1.1.0"
                     android:fontFamily="monospace"
                     android:textColor="@color/brand_primary"
                     android:textSize="10sp"

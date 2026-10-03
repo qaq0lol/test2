@@ -90,6 +90,9 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
+import de.blinkt.openvpn.core.ConnectionStatus;
+import de.blinkt.openvpn.core.VpnStatus;
+
 public class MainActivity extends AppCompatActivity {
 
     private ProfileRepository repository;
@@ -1471,12 +1474,31 @@ public class MainActivity extends AppCompatActivity {
 
     private void toggleVpnConnection() {
         ConnectionState state = UnifiedVpnService.getCurrentState();
-        if (state == ConnectionState.CONNECTED || state == ConnectionState.CONNECTING) {
-            Intent intent = new Intent(this, UnifiedVpnService.class);
-            intent.setAction(UnifiedVpnService.ACTION_STOP_VPN);
-            startService(intent);
+        ProxyProfile active = repository.getActiveProfile();
+
+        boolean isConnectedOrConnecting = state == ConnectionState.CONNECTED
+                || state == ConnectionState.CONNECTING
+                || lastConnectionState == ConnectionState.CONNECTED
+                || lastConnectionState == ConnectionState.CONNECTING;
+
+        if (isConnectedOrConnecting) {
+            if (active != null && active.getProtocolType() == ProtocolType.OPENVPN) {
+                // OpenVPN: 直接向 ics-openvpn 的 OpenVPNService 发送断连 Intent
+                try {
+                    Intent disconnectIntent = new Intent();
+                    disconnectIntent.setClassName(getPackageName(), "de.blinkt.openvpn.core.OpenVPNService");
+                    disconnectIntent.setAction("de.blinkt.openvpn.DISCONNECT_VPN");
+                    startService(disconnectIntent);
+                } catch (Exception e) {
+                    LogManager.log("MainActivity", "发送 OpenVPN 断连失败: " + e.getMessage());
+                }
+                updateConnectionUi(ConnectionState.DISCONNECTED);
+            } else {
+                Intent intent = new Intent(this, UnifiedVpnService.class);
+                intent.setAction(UnifiedVpnService.ACTION_STOP_VPN);
+                startService(intent);
+            }
         } else {
-            ProxyProfile active = repository.getActiveProfile();
             if (active == null) {
                 Toast.makeText(this, "请先选择或导入一个节点配置", Toast.LENGTH_SHORT).show();
                 switchTab(1); // Jump to nodes
@@ -1748,13 +1770,77 @@ public class MainActivity extends AppCompatActivity {
         filter.addAction(UnifiedVpnService.ACTION_CONNECTION_CAPTURED);
 
         ContextCompat.registerReceiver(this, vpnStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        // Register VpnStatus listeners to track OpenVPN state and traffic directly from ics-openvpn
+        VpnStatus.addStateListener(ovpnStateListener);
+        VpnStatus.addByteCountListener(ovpnByteCountListener);
         updateConnectionUi(UnifiedVpnService.getCurrentState());
         updateActiveProfileUi();
     }
 
+    /**
+     * ics-openvpn state listener — drives UI state for OpenVPN connections directly.
+     */
+    private final VpnStatus.StateListener ovpnStateListener = new VpnStatus.StateListener() {
+        @Override
+        public void updateState(String state, String logmessage, int localizedResId, ConnectionStatus level, Intent intent) {
+            if (level == null) return;
+            ProxyProfile active = repository.getActiveProfile();
+            if (active == null || active.getProtocolType() != ProtocolType.OPENVPN) return;
+
+            if (level == ConnectionStatus.LEVEL_CONNECTED) {
+                runOnUiThread(() -> updateConnectionUi(ConnectionState.CONNECTED));
+            } else if (level == ConnectionStatus.LEVEL_NOTCONNECTED || level == ConnectionStatus.LEVEL_NONETWORK) {
+                runOnUiThread(() -> {
+                    if (lastConnectionState == ConnectionState.CONNECTED ||
+                        lastConnectionState == ConnectionState.CONNECTING) {
+                        updateConnectionUi(ConnectionState.DISCONNECTED);
+                    }
+                });
+            } else if (level == ConnectionStatus.LEVEL_AUTH_FAILED) {
+                runOnUiThread(() -> {
+                    updateConnectionUi(ConnectionState.ERROR);
+                    Toast.makeText(MainActivity.this, "❌ OpenVPN 认证失败，请检查账号密码", Toast.LENGTH_LONG).show();
+                });
+            } else if (level == ConnectionStatus.LEVEL_WAITING_FOR_USER_INPUT) {
+                runOnUiThread(() -> {
+                    updateConnectionUi(ConnectionState.ERROR);
+                    Toast.makeText(MainActivity.this, "⚠️ OpenVPN 缺少认证信息，请在节点库中设置账号密码", Toast.LENGTH_LONG).show();
+                });
+            } else if (level == ConnectionStatus.LEVEL_START ||
+                       level == ConnectionStatus.LEVEL_CONNECTING_NO_SERVER_REPLY_YET ||
+                       level == ConnectionStatus.LEVEL_CONNECTING_SERVER_REPLIED) {
+                runOnUiThread(() -> {
+                    if (lastConnectionState != ConnectionState.CONNECTED) {
+                        updateConnectionUi(ConnectionState.CONNECTING);
+                    }
+                });
+            }
+        }
+
+        @Override
+        public void setConnectedVPN(String uuid) {
+            // No-op, tracked via updateState
+        }
+    };
+
+    /**
+     * ics-openvpn byte count listener — updates real-time speed and waveform for OpenVPN
+     */
+    private final VpnStatus.ByteCountListener ovpnByteCountListener = new VpnStatus.ByteCountListener() {
+        @Override
+        public void updateByteCount(long inBytes, long outBytes, long diffIn, long diffOut) {
+            ProxyProfile active = repository.getActiveProfile();
+            if (active != null && active.getProtocolType() == ProtocolType.OPENVPN) {
+                runOnUiThread(() -> onTrafficUpdate(inBytes, outBytes));
+            }
+        }
+    };
+
     @Override
     protected void onPause() {
         super.onPause();
+        VpnStatus.removeStateListener(ovpnStateListener);
+        VpnStatus.removeByteCountListener(ovpnByteCountListener);
         try {
             unregisterReceiver(vpnStateReceiver);
         } catch (IllegalArgumentException ignored) {}
