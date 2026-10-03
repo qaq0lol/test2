@@ -83,15 +83,17 @@ public class OpenVpnEngine implements IVpnEngine, VpnStatus.StateListener, VpnSt
             hasUserPass = true;
         }
 
-        if (vpnProfile.mAuthenticationType == VpnProfile.TYPE_KEYSTORE) {
-            boolean hasCerts = (vpnProfile.mClientCertFilename != null && !vpnProfile.mClientCertFilename.isEmpty()) ||
-                               (vpnProfile.mPKCS12Filename != null && !vpnProfile.mPKCS12Filename.isEmpty());
-            
-            if (!hasCerts && hasUserPass) {
-                vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
-            } else if (hasCerts && hasUserPass) {
+        boolean hasCerts = (vpnProfile.mClientCertFilename != null && !vpnProfile.mClientCertFilename.isEmpty()) ||
+                           (vpnProfile.mPKCS12Filename != null && !vpnProfile.mPKCS12Filename.isEmpty());
+        
+        if (hasUserPass) {
+            if (hasCerts) {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS_CERTIFICATES;
-            } else if (hasCerts) {
+            } else {
+                vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
+            }
+        } else if (vpnProfile.mAuthenticationType == VpnProfile.TYPE_KEYSTORE) {
+            if (hasCerts) {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_CERTIFICATES;
             } else {
                 vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;

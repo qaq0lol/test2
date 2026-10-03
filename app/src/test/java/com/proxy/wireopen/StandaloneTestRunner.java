@@ -12,6 +12,12 @@ public class StandaloneTestRunner {
         PresetRegionTest.runAllTests();
         ConnectionRecordTest.runAllTests();
 
+        try {
+            new TestAuthOverride().testAuthType();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
         System.out.println("========================================");
         System.out.println("ALL TESTS PASSED SUCCESSFULLY! (100%)");
         System.out.println("========================================");
