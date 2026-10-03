@@ -10,8 +10,8 @@ android {
         applicationId = "com.proxy.wireopen"
         minSdk = 26
         targetSdk = 36 // Compatible with Android 16+
-        versionCode = 8
-        versionName = "1.0.7"
+        versionCode = 9
+        versionName = "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -50,10 +50,14 @@ dependencies {
     // WireGuard Android Tunnel Core (wireguard-go backend)
     implementation("com.wireguard.android:tunnel:1.0.20230706")
 
+    // Official OpenVPN 2.7 / OpenSSL 3.4.1 Native Core (ics-openvpn AAR)
+    implementation(files("libs/icsopenvpn-0.7.55.aar"))
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
 }
+
 
 // Automatically copy generated APK to project root directory after build
 tasks.register("copyApkToRoot") {

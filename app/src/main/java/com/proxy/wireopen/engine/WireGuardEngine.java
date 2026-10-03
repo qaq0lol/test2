@@ -55,7 +55,9 @@ public class WireGuardEngine implements IVpnEngine {
         LogManager.log(TAG, "正在初始化 WireGuard 官方内核引擎 (wireguard-go)...");
         LogManager.log(TAG, "WireGuard 协议引擎启动: 基于 Curve25519 密钥对与 Noise_IKpsk2 协商，与账号密码凭据彻底绝缘。");
 
-        backend = new GoBackend(context);
+        // Fix: GoBackend must receive the VpnService instance itself, not ApplicationContext.
+        // GoBackend internally calls VpnService.Builder which requires a VpnService subclass.
+        backend = new GoBackend(vpnService);
 
         tunnel = new Tunnel() {
             @Override

@@ -244,8 +244,8 @@ public class MainActivity extends AppCompatActivity {
                     onTrafficUpdate(rx, tx);
                 }
             } else if (UnifiedVpnService.ACTION_CONNECTION_CAPTURED.equals(action)) {
-                // Real packet captured — refresh the requests list
-                runOnUiThread(() -> refreshRequestsList());
+                // Real packet captured — debounced refresh to prevent UI stutter / ANR
+                scheduleRequestsRefresh();
             }
         }
     };
@@ -566,6 +566,14 @@ public class MainActivity extends AppCompatActivity {
         }
 
         refreshRequestsList();
+    }
+
+    private final Handler requestDebounceHandler = new Handler(Looper.getMainLooper());
+    private final Runnable requestDebounceRunnable = this::refreshRequestsList;
+
+    private void scheduleRequestsRefresh() {
+        requestDebounceHandler.removeCallbacks(requestDebounceRunnable);
+        requestDebounceHandler.postDelayed(requestDebounceRunnable, 300);
     }
 
     private void refreshRequestsList() {
@@ -1755,6 +1763,19 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         stopConnectionTimer();
+        requestDebounceHandler.removeCallbacks(requestDebounceRunnable);
+
+        // Fix: dismiss any open dialogs to prevent WindowLeaked crash on Activity destruction
+        // (e.g. during screen rotation or when app is killed while a dialog is open).
+        if (logConsoleDialog != null && logConsoleDialog.isShowing()) {
+            logConsoleDialog.dismiss();
+            logConsoleDialog = null;
+        }
+
+        // Fix: clear LogManager listener to release the WeakReference and prevent
+        // potential dangling callbacks into a dead Activity.
+        LogManager.setListener(null);
+
         if (webviewIppure != null) {
             if (webviewIppure.getParent() instanceof ViewGroup) {
                 ((ViewGroup) webviewIppure.getParent()).removeView(webviewIppure);

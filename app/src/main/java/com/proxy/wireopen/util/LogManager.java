@@ -1,5 +1,6 @@
 package com.proxy.wireopen.util;
 
+import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -8,19 +9,24 @@ import java.util.Locale;
 
 /**
  * Log manager providing in-memory log buffer and listener registration.
+ *
+ * The listener is stored as a WeakReference to avoid retaining Activity instances
+ * after they are destroyed (e.g. on screen rotation), which would cause memory leaks.
  */
 public class LogManager {
     private static final int MAX_LOG_LINES = 500;
     private static final List<String> logs = new ArrayList<>();
     private static final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
-    private static LogListener listener;
+
+    // Fix: use WeakReference so the static field cannot prevent GC of the Activity.
+    private static WeakReference<LogListener> listenerRef = null;
 
     public interface LogListener {
         void onNewLog(String logEntry);
     }
 
     public static synchronized void setListener(LogListener l) {
-        listener = l;
+        listenerRef = (l != null) ? new WeakReference<>(l) : null;
     }
 
     public static synchronized void log(String tag, String message) {
@@ -30,8 +36,14 @@ public class LogManager {
             logs.remove(0);
         }
         logs.add(entry);
-        if (listener != null) {
-            listener.onNewLog(entry);
+        if (listenerRef != null) {
+            LogListener l = listenerRef.get();
+            if (l != null) {
+                l.onNewLog(entry);
+            } else {
+                // Listener was GC'd — clean up the dead reference
+                listenerRef = null;
+            }
         }
     }
 

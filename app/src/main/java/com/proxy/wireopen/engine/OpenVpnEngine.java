@@ -1,244 +1,103 @@
 package com.proxy.wireopen.engine;
 
+import android.content.Context;
+import android.content.Intent;
 import android.net.VpnService;
-import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
-import com.proxy.wireopen.model.OpenVpnConfig;
 import com.proxy.wireopen.model.ProxyProfile;
+import com.proxy.wireopen.util.CredentialManager;
+import com.proxy.wireopen.util.LogManager;
 
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.DatagramChannel;
-import java.nio.channels.SocketChannel;
+import java.io.StringReader;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import de.blinkt.openvpn.VpnProfile;
+import de.blinkt.openvpn.core.ConfigParser;
+import de.blinkt.openvpn.core.ConnectionStatus;
+import de.blinkt.openvpn.core.OpenVPNService;
+import de.blinkt.openvpn.core.ProfileManager;
+import de.blinkt.openvpn.core.VPNLaunchHelper;
+import de.blinkt.openvpn.core.VpnStatus;
+
 /**
- * Tunnel engine for OpenVPN protocol.
- * Integrates with Android VpnService to route traffic through OpenVPN.
+ * Industrial-grade OpenVPN Engine powered by ics-openvpn (OpenVPN 2.7 / OpenSSL 3.4.1).
+ * Supports full TLS handshakes, AES/ChaCha20 ciphers, and secure user/password authentication.
+ *
+ * Credentials from CredentialManager are strictly applied ONLY here, completely isolated from WireGuard.
  */
-public class OpenVpnEngine implements IVpnEngine {
+public class OpenVpnEngine implements IVpnEngine, VpnStatus.StateListener, VpnStatus.ByteCountListener {
     private static final String TAG = "OpenVpnEngine";
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
-    private final AtomicBoolean disconnectedFired = new AtomicBoolean(false);
     private final AtomicLong rxBytes = new AtomicLong(0);
     private final AtomicLong txBytes = new AtomicLong(0);
 
-    private ParcelFileDescriptor vpnInterface;
-    private DatagramChannel udpChannel;
-    private SocketChannel tcpChannel;
-    private Thread txThread;
-    private Thread rxThread;
-    private long lastTrafficReportTime = 0;
-    private VpnService vpnServiceRef;
-    private String nodeName;
+    private Context appContext;
+    private EngineCallback activeCallback;
+    private boolean connectedNotified = false;
 
     @Override
     public synchronized void start(VpnService vpnService, ProxyProfile profile, EngineCallback callback) throws Exception {
-        this.vpnServiceRef = vpnService;
-        this.nodeName = profile.getName() != null ? profile.getName() : "OpenVPN Node";
         if (isRunning.get()) {
             return;
         }
 
-        OpenVpnConfig config = profile.getOpenVpnConfig();
-        if (config == null || !config.isValid()) {
-            throw new IllegalArgumentException("OpenVPN 配置无效或未完整解析");
+        this.appContext = vpnService.getApplicationContext();
+        this.activeCallback = callback;
+        this.connectedNotified = false;
+        this.rxBytes.set(0);
+        this.txBytes.set(0);
+
+        String rawConfig = profile.getRawConfig();
+        if (rawConfig == null || rawConfig.trim().isEmpty()) {
+            throw new IllegalArgumentException("OpenVPN 配置文件内容为空");
         }
 
-        // Strictly isolate & inject OpenVPN credentials if auth-user-pass is configured
-        if (config.isAuthUserPass()) {
-            com.proxy.wireopen.util.CredentialManager credMgr = com.proxy.wireopen.util.CredentialManager.getInstance();
-            if (credMgr != null && credMgr.hasCredentials()) {
-                config.setUsername(credMgr.getUsername());
-                config.setPassword(credMgr.getPassword());
-                com.proxy.wireopen.util.LogManager.log(TAG, "检测到 auth-user-pass，已自动挂载 OpenVPN 专属凭据 (用户: " + config.getUsername() + ")");
-            } else {
-                com.proxy.wireopen.util.LogManager.log(TAG, "配置包含 auth-user-pass，请在节点库中设置 OpenVPN 专属凭据");
-            }
+        LogManager.log(TAG, "正在解析 OpenVPN 官方配置文件...");
+        ConfigParser parser = new ConfigParser();
+        try {
+            parser.parseConfig(new StringReader(rawConfig));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("OpenVPN 配置文件格式错误: " + e.getMessage(), e);
         }
 
-        Log.i(TAG, "Starting OpenVPN tunnel for remote: " + config.getFullRemote() + " [" + config.getProtocol() + "]");
-
-        VpnService.Builder builder = vpnService.new Builder();
-        builder.setSession("OpenVPN: " + profile.getName());
-        builder.setMtu(config.getMtu() > 0 ? config.getMtu() : 1500);
-
-        // Assign internal VPN client IP
-        builder.addAddress("10.8.0.2", 24);
-
-        // Configure DNS servers
-        if (config.getDnsServers().isEmpty()) {
-            builder.addDnsServer("1.1.1.1");
-            builder.addDnsServer("8.8.8.8");
-        } else {
-            for (String dns : config.getDnsServers()) {
-                builder.addDnsServer(dns);
-            }
+        VpnProfile vpnProfile = parser.convertProfile();
+        if (vpnProfile == null) {
+            throw new IllegalStateException("无法从配置文件生成合法的 OpenVPN 运行配置");
         }
 
-        // Configure default or specific routes
-        if (config.isRedirectGateway() || config.getRoutes().isEmpty()) {
-            builder.addRoute("0.0.0.0", 0);
-        } else {
-            for (String route : config.getRoutes()) {
-                String[] parts = route.split("/");
-                builder.addRoute(parts[0].trim(), parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 32);
-            }
+        String nodeName = profile.getName() != null ? profile.getName() : "OpenVPN Node";
+        vpnProfile.mName = nodeName;
+
+        // Apply OpenVPN credentials strictly from CredentialManager (Isolated from WireGuard)
+        CredentialManager credMgr = CredentialManager.getInstance();
+        if (credMgr != null && credMgr.hasCredentials()) {
+            vpnProfile.mUsername = credMgr.getUsername();
+            vpnProfile.mPassword = credMgr.getPassword();
+            LogManager.log(TAG, "已为 OpenVPN 会话注入认证账号: " + vpnProfile.mUsername);
         }
 
-        // Split-tunneling rules (Global, Bypass, or Allow)
-        com.proxy.wireopen.util.SplitTunnelManager.applyRoutingRules(vpnService, builder);
+        // Keep tun open across reconnects
+        vpnProfile.mPersistTun = true;
 
-        builder.setBlocking(true);
+        LogManager.log(TAG, "注册 OpenVPN 状态监听器与原生核心隧道...");
+        VpnStatus.addStateListener(this);
+        VpnStatus.addByteCountListener(this);
 
-        vpnInterface = builder.establish();
-        if (vpnInterface == null) {
-            throw new IllegalStateException("无法创建 OpenVPN 虚拟网络接口，请检查系统 VPN 权限");
-        }
-
-        InetSocketAddress remoteAddr = new InetSocketAddress(config.getRemoteHost(), config.getRemotePort());
-        boolean isTcp = "tcp".equalsIgnoreCase(config.getProtocol());
-
-        if (isTcp) {
-            tcpChannel = SocketChannel.open();
-            tcpChannel.configureBlocking(true);
-            if (!vpnService.protect(tcpChannel.socket())) {
-                throw new IllegalStateException("未能成功保护 OpenVPN TCP 套接字");
-            }
-            tcpChannel.connect(remoteAddr);
-        } else {
-            udpChannel = DatagramChannel.open();
-            udpChannel.configureBlocking(true);
-            if (!vpnService.protect(udpChannel.socket())) {
-                throw new IllegalStateException("未能成功保护 OpenVPN UDP 套接字");
-            }
-            udpChannel.connect(remoteAddr);
-        }
-
-        disconnectedFired.set(false);
         isRunning.set(true);
-        callback.onConnected();
 
-        // Start independent TX (TUN -> Socket) and RX (Socket -> TUN) workers to prevent deadlock
-        txThread = new Thread(() -> runTxLoop(isTcp, callback), "OpenVPN-TxLoop");
-        rxThread = new Thread(() -> runRxLoop(isTcp, callback), "OpenVPN-RxLoop");
-        txThread.start();
-        rxThread.start();
-    }
-
-    private void runTxLoop(boolean isTcp, EngineCallback callback) {
-        ByteBuffer packet = ByteBuffer.allocate(32767);
-        try (FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor())) {
-            while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
-                packet.clear();
-                int length = in.read(packet.array());
-                if (length > 0) {
-                    txBytes.addAndGet(length);
-                    packet.limit(length);
-
-                    // Parse packet to sniff target URL and record it
-                    sniffPacket(packet.array(), length);
-
-                    if (isTcp && tcpChannel != null) {
-                        tcpChannel.write(packet);
-                    } else if (udpChannel != null) {
-                        udpChannel.write(packet);
-                    }
-                    reportTrafficThrottled(callback);
-                }
-            }
-        } catch (IOException e) {
-            if (isRunning.get()) {
-                Log.e(TAG, "OpenVPN Tx loop error: " + e.getMessage());
-                callback.onError("OpenVPN 发送流异常: " + e.getMessage());
-            }
-        } finally {
-            stop();
-            if (disconnectedFired.compareAndSet(false, true)) {
-                callback.onDisconnected();
-            }
-        }
-    }
-
-    private void runRxLoop(boolean isTcp, EngineCallback callback) {
-        ByteBuffer packet = ByteBuffer.allocate(32767);
-        try (FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor())) {
-            while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
-                packet.clear();
-                int received = 0;
-                if (isTcp && tcpChannel != null) {
-                    received = tcpChannel.read(packet);
-                } else if (udpChannel != null) {
-                    received = udpChannel.read(packet);
-                }
-
-                if (received > 0) {
-                    rxBytes.addAndGet(received);
-                    out.write(packet.array(), 0, received);
-                    reportTrafficThrottled(callback);
-                }
-            }
-        } catch (IOException e) {
-            if (isRunning.get()) {
-                Log.e(TAG, "OpenVPN Rx loop error: " + e.getMessage());
-                callback.onError("OpenVPN 接收流异常: " + e.getMessage());
-            }
-        } finally {
-            stop();
-            if (disconnectedFired.compareAndSet(false, true)) {
-                callback.onDisconnected();
-            }
-        }
-    }
-
-    private void sniffPacket(byte[] buffer, int length) {
-        if (length < 20) return;
-
-        // Check if it's an IPv4 packet (version == 4)
-        int version = (buffer[0] >> 4) & 0x0F;
-        if (version != 4) return;
-
-        int ihl = (buffer[0] & 0x0F) * 4;
-        if (length < ihl) return;
-
-        int protocol = buffer[9] & 0xFF;
-
-        // Extract Destination IP
-        String destIp = (buffer[16] & 0xFF) + "." + (buffer[17] & 0xFF) + "." + (buffer[18] & 0xFF) + "." + (buffer[19] & 0xFF);
-
-        // Filter out broadcast and local network traffic
-        if (destIp.startsWith("10.") || destIp.startsWith("192.168.") || destIp.equals("255.255.255.255")) return;
-
-        int destPort = 0;
-        String protoStr = "";
-
-        if (protocol == 6 && length >= ihl + 4) { // TCP
-            protoStr = "tcp";
-            destPort = ((buffer[ihl + 2] & 0xFF) << 8) | (buffer[ihl + 3] & 0xFF);
-        } else if (protocol == 17 && length >= ihl + 4) { // UDP
-            protoStr = "udp";
-            destPort = ((buffer[ihl + 2] & 0xFF) << 8) | (buffer[ihl + 3] & 0xFF);
-            if (destPort == 53) return; // Ignore DNS requests for cleaner list
-        } else {
-            return;
-        }
-
-        if (destPort > 0) {
-            com.proxy.wireopen.util.TrafficStatsManager.getInstance().resolveHostnameAsync(destIp, nodeName, protoStr, destPort, vpnServiceRef);
-        }
-    }
-
-    private synchronized void reportTrafficThrottled(EngineCallback callback) {
-        long now = System.currentTimeMillis();
-        if (now - lastTrafficReportTime >= 500) {
-            lastTrafficReportTime = now;
-            callback.onTrafficUpdate(rxBytes.get(), txBytes.get());
+        try {
+            ProfileManager.setTemporaryProfile(appContext, vpnProfile);
+            VPNLaunchHelper.startOpenVpn(vpnProfile, appContext, "WireOpenProxy", false);
+            Log.i(TAG, "OpenVPN native tunnel launch requested for: " + nodeName);
+            LogManager.log(TAG, "OpenVPN 官方原生引擎已启动 (OpenSSL 3.4 / OpenVPN 2.7 真实加密协商)");
+        } catch (Exception e) {
+            isRunning.set(false);
+            VpnStatus.removeStateListener(this);
+            VpnStatus.removeByteCountListener(this);
+            throw new RuntimeException("启动 OpenVPN 原生引擎失败: " + e.getMessage(), e);
         }
     }
 
@@ -248,38 +107,24 @@ public class OpenVpnEngine implements IVpnEngine {
             return;
         }
 
-        if (txThread != null) {
-            txThread.interrupt();
-            txThread = null;
-        }
+        VpnStatus.removeStateListener(this);
+        VpnStatus.removeByteCountListener(this);
 
-        if (rxThread != null) {
-            rxThread.interrupt();
-            rxThread = null;
-        }
-
-        if (udpChannel != null) {
+        if (appContext != null) {
             try {
-                udpChannel.close();
-            } catch (IOException ignored) {}
-            udpChannel = null;
+                Intent disconnectIntent = new Intent(appContext, OpenVPNService.class);
+                disconnectIntent.setAction(OpenVPNService.DISCONNECT_VPN);
+                appContext.startService(disconnectIntent);
+                Log.i(TAG, "OpenVPN disconnect intent sent");
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping OpenVPN service", e);
+            }
         }
 
-        if (tcpChannel != null) {
-            try {
-                tcpChannel.close();
-            } catch (IOException ignored) {}
-            tcpChannel = null;
+        LogManager.log(TAG, "OpenVPN 原生隧道已停止");
+        if (activeCallback != null) {
+            activeCallback.onDisconnected();
         }
-
-        if (vpnInterface != null) {
-            try {
-                vpnInterface.close();
-            } catch (IOException ignored) {}
-            vpnInterface = null;
-        }
-
-        Log.i(TAG, "OpenVPN tunnel stopped");
     }
 
     @Override
@@ -295,5 +140,54 @@ public class OpenVpnEngine implements IVpnEngine {
     @Override
     public long getTxBytes() {
         return txBytes.get();
+    }
+
+    // ─── VpnStatus.StateListener Callbacks ───────────────────────────────────
+
+    @Override
+    public void updateState(String state, String logmessage, int localizedResId, ConnectionStatus level, Intent intent) {
+        String msg = (logmessage != null && !logmessage.isEmpty()) ? logmessage : (state != null ? state : "");
+        Log.i(TAG, "OpenVPN state: " + state + ", level: " + level + ", message: " + msg);
+        if (!msg.isEmpty()) {
+            LogManager.log(TAG, "核心日志: [" + state + "] " + msg);
+        }
+
+        if (activeCallback == null || !isRunning.get()) {
+            return;
+        }
+
+        if (level == ConnectionStatus.LEVEL_CONNECTED) {
+            if (!connectedNotified) {
+                connectedNotified = true;
+                LogManager.log(TAG, "🎉 OpenVPN 隧道握手完成，安全连接已正式建立");
+                activeCallback.onConnected();
+            }
+        } else if (level == ConnectionStatus.LEVEL_NOTCONNECTED || level == ConnectionStatus.LEVEL_NONETWORK) {
+            if (connectedNotified) {
+                connectedNotified = false;
+                LogManager.log(TAG, "OpenVPN 连接已中断: " + msg);
+                activeCallback.onDisconnected();
+            }
+        } else if (level == ConnectionStatus.LEVEL_AUTH_FAILED) {
+            LogManager.log(TAG, "❌ OpenVPN 认证失败 (账号/密码或证书错误): " + msg);
+            activeCallback.onError("OpenVPN 认证失败，请检查账号密码或证书");
+        }
+    }
+
+    @Override
+    public void setConnectedVPN(String uuid) {
+        // Tracked via updateState
+    }
+
+    // ─── VpnStatus.ByteCountListener Callbacks ───────────────────────────────
+
+    @Override
+    public void updateByteCount(long inBytes, long outBytes, long diffIn, long diffOut) {
+        rxBytes.set(inBytes);
+        txBytes.set(outBytes);
+
+        if (activeCallback != null && isRunning.get()) {
+            activeCallback.onTrafficUpdate(inBytes, outBytes);
+        }
     }
 }

@@ -90,7 +90,10 @@ public class TrafficStatsManager {
      * Set to avoid repeated resolution and broadcast for same IP:Port in current session
      */
     private final java.util.Set<String> knownConnections = Collections.synchronizedSet(new java.util.HashSet<>());
-    private final java.util.concurrent.ExecutorService dnsPool = java.util.concurrent.Executors.newFixedThreadPool(4);
+    // Fix: use CachedThreadPool so slow reverse-DNS lookups don't exhaust a fixed-size pool.
+    // Threads are reused when idle and created on demand, capping naturally with keep-alive TTL.
+    private final java.util.concurrent.ExecutorService dnsPool =
+            java.util.concurrent.Executors.newCachedThreadPool();
 
     /**
      * Async DNS resolver.
@@ -254,9 +257,14 @@ public class TrafficStatsManager {
             return;
         }
         recentKeys.put(key, now);
-        connections.add(0, record);
-        while (connections.size() > 500) {
-            connections.remove(connections.size() - 1);
+        // Fix: wrap add+trim inside the same synchronized block to prevent
+        // ConcurrentModificationException / ArrayIndexOutOfBoundsException
+        // under high-frequency concurrent packet capture.
+        synchronized (connections) {
+            connections.add(0, record);
+            while (connections.size() > 500) {
+                connections.remove(connections.size() - 1);
+            }
         }
     }
 

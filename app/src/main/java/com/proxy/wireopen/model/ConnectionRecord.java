@@ -13,8 +13,10 @@ public class ConnectionRecord implements Serializable {
     private String targetUrl;       // e.g. "tcp://api.bilibili.com:443"
     private long timestamp;
     private String relativeTimeStr; // e.g. "刚刚", "1秒前"
-    private long uploadBytes;       // e.g. 517
-    private long downloadBytes;     // e.g. 0
+    // Fix: volatile + synchronized to prevent lost-update data races when multiple
+    // packet-capture threads concurrently call addTxBytes/addRxBytes.
+    private volatile long uploadBytes;
+    private volatile long downloadBytes;
     private String nodeFlag;        // e.g. "🇩🇪"
     private String nodeName;        // e.g. "德国A1 6 | 0.7倍 | V1"
     private String rule;            // e.g. "GLOBAL"
@@ -61,8 +63,8 @@ public class ConnectionRecord implements Serializable {
     // Aliases used by packet capture / TrafficStatsManager
     public long getTxBytes() { return uploadBytes; }
     public long getRxBytes() { return downloadBytes; }
-    public void addTxBytes(long delta) { this.uploadBytes += delta; }
-    public void addRxBytes(long delta) { this.downloadBytes += delta; }
+    public synchronized void addTxBytes(long delta) { this.uploadBytes += delta; }
+    public synchronized void addRxBytes(long delta) { this.downloadBytes += delta; }
 
     public String getNodeFlag() { return nodeFlag; }
     public void setNodeFlag(String nodeFlag) { this.nodeFlag = nodeFlag; }

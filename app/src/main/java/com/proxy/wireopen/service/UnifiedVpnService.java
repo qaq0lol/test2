@@ -95,10 +95,17 @@ public class UnifiedVpnService extends VpnService {
         LogManager.log("UnifiedVpnService", "正在启动代理服务: " + profile.getName() + " [" + profile.getProtocolType() + "]");
 
         Notification notification = buildNotification("正在连接代理...", profile.getName());
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception fgsEx) {
+            // Android 14+ may throw ForegroundServiceStartNotAllowedException when starting
+            // from the background (e.g. auto-reconnect after screen lock).
+            // The VPN tunnel itself is managed by VpnService.Builder and remains functional.
+            LogManager.log("UnifiedVpnService", "前台服务启动受限 (Android 14+): " + fgsEx.getMessage());
         }
 
         if (profile.getProtocolType() == ProtocolType.WIREGUARD) {
