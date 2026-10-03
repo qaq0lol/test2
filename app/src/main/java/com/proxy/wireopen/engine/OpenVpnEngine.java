@@ -73,10 +73,29 @@ public class OpenVpnEngine implements IVpnEngine, VpnStatus.StateListener, VpnSt
 
         // Apply OpenVPN credentials strictly from CredentialManager (Isolated from WireGuard)
         CredentialManager credMgr = CredentialManager.getInstance();
+        boolean hasUserPass = false;
         if (credMgr != null && credMgr.hasCredentials()) {
             vpnProfile.mUsername = credMgr.getUsername();
             vpnProfile.mPassword = credMgr.getPassword();
+            hasUserPass = true;
             LogManager.log(TAG, "已为 OpenVPN 会话注入认证账号: " + vpnProfile.mUsername);
+        } else if (vpnProfile.mUsername != null && !vpnProfile.mUsername.isEmpty()) {
+            hasUserPass = true;
+        }
+
+        if (vpnProfile.mAuthenticationType == VpnProfile.TYPE_KEYSTORE) {
+            boolean hasCerts = (vpnProfile.mClientCertFilename != null && !vpnProfile.mClientCertFilename.isEmpty()) ||
+                               (vpnProfile.mPKCS12Filename != null && !vpnProfile.mPKCS12Filename.isEmpty());
+            
+            if (!hasCerts && hasUserPass) {
+                vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
+            } else if (hasCerts && hasUserPass) {
+                vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS_CERTIFICATES;
+            } else if (hasCerts) {
+                vpnProfile.mAuthenticationType = VpnProfile.TYPE_CERTIFICATES;
+            } else {
+                vpnProfile.mAuthenticationType = VpnProfile.TYPE_USERPASS;
+            }
         }
 
         // Keep tun open across reconnects
